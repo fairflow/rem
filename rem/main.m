@@ -9,14 +9,15 @@
 #import <Foundation/Foundation.h>
 #import <EventKit/EventKit.h>
 
-#define COMMANDS @[ @"ls", @"add", @"rm", @"cat", @"done", @"help", @"version" ]
-typedef enum _CommandType {
+#define COMMANDS @[ @"ls", @"add", @"rm", @"cat", @"done", @"event", @"help", @"version" ]
+typedef enum my_CommandType {
     CMD_UNKNOWN = -1,
     CMD_LS = 0,
     CMD_ADD,
     CMD_RM,
     CMD_CAT,
     CMD_DONE,
+    CMD_EVENT,
     CMD_HELP,
     CMD_VERSION
 } CommandType;
@@ -27,7 +28,9 @@ static NSString *reminder_id;
 
 static EKEventStore *store;
 static NSDictionary *calendars;
+static NSDictionary *eventCalendars;
 static EKReminder *reminder;
+static EKEvent *event;
 
 #define TACKER @"├──"
 #define CORNER @"└──"
@@ -35,7 +38,7 @@ static EKReminder *reminder;
 #define SPACER @"   "
 
 /*!
-    @function _print
+    @function my_print
     @abstract Wrapper for fprintf with NSString format
     @param stream
         Output stream to write to
@@ -46,7 +49,7 @@ static EKReminder *reminder;
     @discussion Wraps call to fprintf with an NSString format argument, permitting use of the
         object formatter '%@'
  */
-static void _print(FILE *file, NSString *format, ...)
+static void my_print(FILE *file, NSString *format, ...)
 {
     va_list args;
     va_start(args, format);
@@ -56,45 +59,47 @@ static void _print(FILE *file, NSString *format, ...)
 }
 
 /*!
-    @function _version
+    @function my_version
     @abstract Output version information
  */
-static void _version()
+static void my_version()
 {
-    _print(stdout, @"rem Version 0.01\n");
+    my_print(stdout, @"rem Version 0.02 Fairflow\n");
 }
 
 /*!
-    @function _usage
+    @function my_usage
     @abstract Output command usage
  */
-static void _usage()
+static void my_usage()
 {
-    _print(stdout, @"Usage:\n");
-    _print(stdout, @"\trem <ls> [list]\n");
-    _print(stdout, @"\t\tList reminders\n");
-    _print(stdout, @"\trem rm [list] [reminder]\n");
-    _print(stdout, @"\t\tRemove reminder from list\n");
-    _print(stdout, @"\trem add [reminder]\n");
-    _print(stdout, @"\t\tAdd reminder to your default list\n");
-    _print(stdout, @"\trem cat [list] [item]\n");
-    _print(stdout, @"\t\tShow reminder detail\n");
-    _print(stdout, @"\trem done [list] [item]\n");
-    _print(stdout, @"\t\tMark reminder as complete\n");
-    _print(stdout, @"\trem help\n");
-    _print(stdout, @"\t\tShow this text\n");
-    _print(stdout, @"\trem verison\n");
-    _print(stdout, @"\t\tShow version information\n");
+    my_print(stdout, @"Usage:\n");
+    my_print(stdout, @"\trem <ls> [list]\n");
+    my_print(stdout, @"\t\tList reminders\n");
+    my_print(stdout, @"\trem rm [list] [reminder]\n");
+    my_print(stdout, @"\t\tRemove reminder from list\n");
+    my_print(stdout, @"\trem add [reminder]\n");
+    my_print(stdout, @"\t\tAdd reminder to your default list\n");
+    my_print(stdout, @"\trem cat [list] [item]\n");
+    my_print(stdout, @"\t\tShow reminder detail\n");
+    my_print(stdout, @"\trem done [list] [item]\n");
+    my_print(stdout, @"\t\tMark reminder as complete\n");
+    my_print(stdout, @"\trem event [list]\n");
+    my_print(stdout, @"\t\tList events\n");
+    my_print(stdout, @"\trem help\n");
+    my_print(stdout, @"\t\tShow this text\n");
+    my_print(stdout, @"\trem version\n");
+    my_print(stdout, @"\t\tShow version information\n");
 }
 
 /*!
     @function parseArguments
-    @abstract Command arguement parser
+    @abstract Command argument parser
     @description Parse command-line arguments and populate appropriate variables
  */
 static void parseArguments()
 {
-    command = CMD_LS;
+    command = CMD_LS; // default is to list calendars i.e. rem == rem ls
     
     NSMutableArray *args = [NSMutableArray arrayWithArray:[[NSProcessInfo processInfo] arguments]];
     [args removeObjectAtIndex:0];    // pop off application argument
@@ -106,18 +111,18 @@ static void parseArguments()
     NSString *cmd = [args objectAtIndex:0];
     command = (CommandType)[COMMANDS indexOfObject:cmd];
     if (command == CMD_UNKNOWN) {
-        _print(stderr, @"rem: Error unknown command %@", cmd);
-        _usage();
+        my_print(stderr, @"rem: Error unknown command %@", cmd);
+        my_usage();
         exit(-1);
     }
     
     // handle help and version requests
     if (command == CMD_HELP) {
-        _usage();
+        my_usage();
         exit(0);
     }
     else if (command == CMD_VERSION) {
-        _version();
+        my_version();
         exit(0);
     }
     
@@ -166,6 +171,25 @@ static NSArray* fetchReminders()
 }
 
 /*!
+ @function fetchEvents
+ @returns NSArray of EKEvents
+ @abstract Fetch all events from Event Store
+ @description use EventKit API to define a predicate to fetch all events from now until ??
+ from the Event Store.
+ Loop over current Run Loop until asynchronous reminder fetch is
+ completed.
+ */
+static NSArray* fetchEvents()
+{
+    __block NSArray *events = nil;
+    NSPredicate *predicate =
+    [store predicateForEventsWithStartDate:[NSDate dateWithTimeIntervalSinceNow:0.01]
+                                   endDate:[NSDate dateWithTimeIntervalSinceNow:20000] calendars:nil];
+    events = [store eventsMatchingPredicate:(NSPredicate *) predicate];
+    return events;
+}
+
+/*!
     @function sortReminders
     @abstract Sort an array of reminders into a dictionary.
     @returns NSDictionary
@@ -196,6 +220,36 @@ static NSDictionary* sortReminders(NSArray *reminders)
 }
 
 /*!
+ @function sortEvents
+ @abstract Sort an array of events into a dictionary.
+ @returns NSDictionary
+ @param events
+ NSArray of EKEvent instances
+ @description Sort an array of EKEvent instances into a dictionary.
+ The keys of the dictionary are event list (calendar) names, which is a property of each
+ EKEvent. The values are arrays containing EKEvents that share a common calendar.
+ */
+static NSDictionary* sortEvents(NSArray *events)
+{
+    NSMutableDictionary *results = nil;
+    if (events != nil && events.count > 0) {
+        results = [NSMutableDictionary dictionary];
+        for (EKEvent *ev in events) {
+            if (ev.allDay) // ignore all day events as a practice run
+                continue;
+            
+            EKCalendar *calendar = [ev calendar];
+            if ([results objectForKey:calendar.title] == nil) {
+                [results setObject:[NSMutableArray array] forKey:calendar.title];
+            }
+            NSMutableArray *calendarEvents = [results objectForKey:calendar.title];
+            [calendarEvents addObject:ev];
+        }
+    }
+    return results;
+}
+
+/*!
     @function validateArguments
     @abstract Verfy the (reminder) list and reminder_id command-line arguments
     @description If provided, verify that the (reminder) list and reminder_id
@@ -213,24 +267,27 @@ static void validateArguments()
     
     NSUInteger calendar_id = [[calendars allKeys] indexOfObject:calendar];
     if (calendar_id == NSNotFound) {
-        _print(stderr, @"rem: Error - Unknown Reminder List: \"%@\"\n", calendar);
+        my_print(stderr, @"rem: Error - Unknown Reminder List: \"%@\"\n", calendar);
         exit(-1);
     }
     
     if (command == CMD_LS && reminder_id == nil)
         return;
     
+    if (command == CMD_EVENT && reminder_id == nil)
+        return; // not quite right yet as we should be able to see the events :-)
+    
     NSInteger r_id = [reminder_id integerValue] - 1;
     NSArray *reminders = [calendars objectForKey:calendar];
     if (r_id < 0 || r_id > reminders.count-1) {
-        _print(stderr, @"rem: Error - ID Out of Range for Reminder List: %@\n", calendar);
+        my_print(stderr, @"rem: Error - ID Out of Range for Reminder List: %@\n", calendar);
         exit(-1);
     }
     reminder = [reminders objectAtIndex:r_id];
 }
 
 /*!
-    @function _printCalendarLine
+    @function my_printCalendarLine
     @abstract format and output line containing calendar (reminder list) name
     @param line
         line to output
@@ -242,14 +299,14 @@ static void validateArguments()
         right-tack unicode character. Both prefix unicode characters are followed
         by two horizontal lines, also unicode.
  */
-static void _printCalendarLine(NSString *line, BOOL last)
+static void my_printCalendarLine(NSString *line, BOOL last)
 {
     NSString *prefix = (last) ? CORNER : TACKER;
-    _print(stdout, @"%@ %@\n", prefix, line);
+    my_print(stdout, @"%@ %@\n", prefix, line);
 }
 
 /*!
-    @function _printReminderLine
+    @function my_printReminderLine
     @abstract format and output line containing reminder information
     @param line
         line to output
@@ -264,33 +321,56 @@ static void _printCalendarLine(NSString *line, BOOL last)
         by two horizontal lines, also unicode. Also, indent the reminder with either
         blank space, if part of last calendar; or vertical bar followed by blank space.
  */
-static void _printReminderLine(NSUInteger id, NSString *line, BOOL last, BOOL lastCalendar)
+static void my_printReminderLine(NSUInteger id, NSString *line, BOOL last, BOOL lastCalendar)
 {
     NSString *indent = (lastCalendar) ? SPACER : PIPER;
     NSString *prefix = (last) ? CORNER : TACKER;
-    _print(stdout, @"%@%@ %ld. %@\n", indent, prefix, id, line);
+    my_print(stdout, @"%@%@ %ld. %@\n", indent, prefix, id, line);
 }
 
 /*!
-    @function _listCalendar
-    @abstract output a calaendar and its reminders
+    @function my_listCalendar
+    @abstract output a calendar and its reminders
     @param cal
         name of calendar (reminder list)
     @param last
         is this the last calendar being displayed?
     @description given a calendar (reminder list) name, output the calendar via
-        _printCalendarLine. Retrieve the calendars reminders and display via _printReminderLine.
+        my_printCalendarLine. Retrieve the calendars reminders and display via my_printReminderLine.
         Each reminder is prepended with an index/id for other commands
  */
-static void _listCalendar(NSString *cal, BOOL last)
+static void my_listCalendar(NSString *cal, BOOL last)
 {
-    _printCalendarLine(cal, last);
+    my_printCalendarLine(cal, last);
     NSArray *reminders = [calendars valueForKey:cal];
     for (NSUInteger i = 0; i < reminders.count; i++) {
         EKReminder *r = [reminders objectAtIndex:i];
-        _printReminderLine(i+1, r.title, (r == [reminders lastObject]), last);
+        my_printReminderLine(i+1, r.title, (r == [reminders lastObject]), last);
     }
 }
+/*!
+ @function my_listEventCalendar
+ @abstract output a calendar and its events
+ @param cal
+ name of calendar (event list)
+ @param last
+ is this the last calendar being displayed?
+ @description given a calendar (reminder list) name, output the calendar via
+ my_printCalendarLine. Retrieve the calendar's events and display via my_printReminderLine.
+ // should be my_printEventLine now
+ Each reminder is prepended with an index/id for other commands
+ */
+
+static void my_listEventCalendar(NSString *cal, BOOL last)
+{
+    my_printCalendarLine(cal, last);
+    NSArray *events = [eventCalendars valueForKey:cal];
+    for (NSUInteger i = 0; i < events.count; i++) {
+        EKEvent *ev = [events objectAtIndex:i];
+        my_printReminderLine(i+1, ev.title, (ev == [events lastObject]), last);
+    }
+}
+
 
 /*!
     @function listReminders
@@ -300,13 +380,26 @@ static void _listCalendar(NSString *cal, BOOL last)
  */
 static void listReminders()
 {
-    _print(stdout, @"Reminders\n");
+    my_print(stdout, @"Reminders\n");
     if (calendar) {
-        _listCalendar(calendar, YES);
+        my_listCalendar(calendar, YES);
     }
     else {
         for (NSString *cal in calendars) {
-            _listCalendar(cal, (cal == [[calendars allKeys] lastObject]));
+            my_listCalendar(cal, (cal == [[calendars allKeys] lastObject]));
+        }
+    }
+}
+
+static void listEvents()
+{
+    my_print(stdout, @"Events partially implemented\n");
+    if (calendar) { /* wtf is calendar doing here? */
+        my_listEventCalendar(calendar, YES); /* might do something sensible now */
+    }
+    else {
+        for (NSString *cal in eventCalendars) {
+            my_listEventCalendar(cal, (cal == [[eventCalendars allKeys] lastObject]));
         }
     }
 }
@@ -325,7 +418,7 @@ static void addReminder()
     NSError *error;
     BOOL success = [store saveReminder:reminder commit:YES error:&error];
     if (!success) {
-        _print(stderr, @"rem: Error adding Reminder (%@)\n\t%@", reminder_id, [error localizedDescription]);        
+        my_print(stderr, @"rem: Error adding Reminder (%@)\n\t%@", reminder_id, [error localizedDescription]);        
     }
 }
 
@@ -339,7 +432,7 @@ static void removeReminder()
     NSError *error;
     BOOL success = [store removeReminder:reminder commit:YES error:&error];
     if (!success) {
-        _print(stderr, @"rem: Error removing Reminder (%@) from list %@\n\t%@", reminder_id, calendar, [error localizedDescription]);
+        my_print(stderr, @"rem: Error removing Reminder (%@) from list %@\n\t%@", reminder_id, calendar, [error localizedDescription]);
     }
 }
 
@@ -354,27 +447,27 @@ static void showReminder()
     NSDateFormatter *dateFormatter = [[NSDateFormatter alloc] init];
     [dateFormatter setDateStyle:NSDateFormatterShortStyle];
    
-    _print(stdout, @"Reminder: %@\n", reminder.title);
-    _print(stdout, @"\tList: %@\n", calendar);
+    my_print(stdout, @"Reminder: %@\n", reminder.title);
+    my_print(stdout, @"\tList: %@\n", calendar);
     
-    _print(stdout, @"\tCreated On: %@\n", [dateFormatter stringFromDate:reminder.creationDate]);
+    my_print(stdout, @"\tCreated On: %@\n", [dateFormatter stringFromDate:reminder.creationDate]);
         
     if (reminder.lastModifiedDate != reminder.creationDate) {
-        _print(stdout, @"\tLast Modified On: %@\n", [dateFormatter stringFromDate:reminder.lastModifiedDate]);
+        my_print(stdout, @"\tLast Modified On: %@\n", [dateFormatter stringFromDate:reminder.lastModifiedDate]);
     }
         
     NSDate *startDate = [reminder.startDateComponents date];
     if (startDate) {
-        _print(stdout, @"\tStarted On: %@\n", [dateFormatter stringFromDate:startDate]);
+        my_print(stdout, @"\tStarted On: %@\n", [dateFormatter stringFromDate:startDate]);
     }
         
     NSDate *dueDate = [reminder.dueDateComponents date];
     if (dueDate) {
-        _print(stdout, @"\tDue On: %@\n", [dateFormatter stringFromDate:dueDate]);
+        my_print(stdout, @"\tDue On: %@\n", [dateFormatter stringFromDate:dueDate]);
     }
     
     if (reminder.hasNotes) {
-        _print(stdout, @"\tNotes: %@\n", reminder.notes);
+        my_print(stdout, @"\tNotes: %@\n", reminder.notes);
     }
 }
 
@@ -389,7 +482,7 @@ static void completeReminder()
     NSError *error;
     BOOL success = [store saveReminder:reminder commit:YES error:&error];
     if (!success) {
-        _print(stderr, @"rem: Error marking Reminder (%@) from list %@\n\t%@", reminder_id, calendar, [error localizedDescription]);
+        my_print(stderr, @"rem: Error marking Reminder (%@) from list %@\n\t%@", reminder_id, calendar, [error localizedDescription]);
     }
 }
 
@@ -416,6 +509,8 @@ static void handleCommand()
         case CMD_DONE:
             completeReminder();
             break;
+        case CMD_EVENT:
+            listEvents();
         case CMD_HELP:
         case CMD_VERSION:
         case CMD_UNKNOWN:
@@ -434,6 +529,8 @@ int main(int argc, const char * argv[])
         
         if (command != CMD_ADD) {
             NSArray *reminders = fetchReminders();
+            NSArray *events = fetchEvents();
+            eventCalendars = sortEvents(events);
             calendars = sortReminders(reminders);
         }
         

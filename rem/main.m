@@ -9,7 +9,7 @@
 #import <Foundation/Foundation.h>
 #import <EventKit/EventKit.h>
 
-#define COMMANDS @[ @"ls", @"add", @"rm", @"cat", @"done", @"event", @"help", @"version" ]
+#define COMMANDS @[ @"ls", @"add", @"rm", @"cat", @"done", @"event", @"cal", @"help", @"version" ]
 typedef enum my_CommandType {
     CMD_UNKNOWN = -1,
     CMD_LS = 0,
@@ -18,6 +18,7 @@ typedef enum my_CommandType {
     CMD_CAT,
     CMD_DONE,
     CMD_EVENT,
+    CMD_CAL,
     CMD_HELP,
     CMD_VERSION
 } CommandType;
@@ -109,7 +110,7 @@ static void parseArguments()
         return;
     
     NSString *cmd = [args objectAtIndex:0];
-    command = (CommandType)[COMMANDS indexOfObject:cmd];
+    command = (CommandType)[COMMANDS indexOfObject:cmd]; // ulp!
     if (command == CMD_UNKNOWN) {
         my_print(stderr, @"rem: Error unknown command %@", cmd);
         my_usage();
@@ -137,7 +138,7 @@ static void parseArguments()
         calendar = [args objectAtIndex:1];
     }
 
-    // get the reminder id if exists
+    // get the reminder id if exists // and ignore the rest; note this could be an event id
     if (args.count >= 3) {
         reminder_id = [args objectAtIndex:2];
     }
@@ -171,20 +172,31 @@ static NSArray* fetchReminders()
 }
 
 /*!
+    @function days
+    @abstract Return the number of seconds in a given number of days
+    @returns the number of seconds in the given number of days
+    @param d
+        integer d representing a number of days
+ */
+static int days(int d)
+{
+    return d*24*3600;
+}
+
+/*!
  @function fetchEvents
  @returns NSArray of EKEvents
  @abstract Fetch all events from Event Store
- @description use EventKit API to define a predicate to fetch all events from now until ??
- from the Event Store.
- Loop over current Run Loop until asynchronous reminder fetch is
- completed.
+ @description use EventKit API to define a predicate to fetch all events from now until 10 days
+    from the Event Store.
+    No asynchronous fetch at present.
  */
 static NSArray* fetchEvents()
 {
     __block NSArray *events = nil;
     NSPredicate *predicate =
     [store predicateForEventsWithStartDate:[NSDate dateWithTimeIntervalSinceNow:0.01]
-                                   endDate:[NSDate dateWithTimeIntervalSinceNow:20000] calendars:nil];
+                                   endDate:[NSDate dateWithTimeIntervalSinceNow:days(10)] calendars:nil];
     events = [store eventsMatchingPredicate:(NSPredicate *) predicate];
     return events;
 }
@@ -220,14 +232,14 @@ static NSDictionary* sortReminders(NSArray *reminders)
 }
 
 /*!
- @function sortEvents
- @abstract Sort an array of events into a dictionary.
- @returns NSDictionary
- @param events
- NSArray of EKEvent instances
- @description Sort an array of EKEvent instances into a dictionary.
- The keys of the dictionary are event list (calendar) names, which is a property of each
- EKEvent. The values are arrays containing EKEvents that share a common calendar.
+    @function sortEvents
+    @abstract Sort an array of events into a dictionary.
+    @returns NSDictionary
+    @param events
+        NSArray of EKEvent instances
+    @description Sort an array of EKEvent instances into a dictionary.
+    The keys of the dictionary are event list (calendar) names, which is a property of each
+    EKEvent. The values are arrays containing EKEvents that share a common calendar.
  */
 static NSDictionary* sortEvents(NSArray *events)
 {
@@ -258,6 +270,7 @@ static NSDictionary* sortEvents(NSArray *events)
         is within the index range of the appropriate calendar array.
  */
 static void validateArguments()
+// this is called after parsing so dangling arguments are silently ignored
 {
     if (command == CMD_LS && calendar == nil)
         return;
@@ -275,15 +288,30 @@ static void validateArguments()
         return;
     
     if (command == CMD_EVENT && reminder_id == nil)
-        return; // not quite right yet as we should be able to see the events :-)
+        return; // seems ok
     
-    NSInteger r_id = [reminder_id integerValue] - 1;
-    NSArray *reminders = [calendars objectForKey:calendar];
-    if (r_id < 0 || r_id > reminders.count-1) {
-        my_print(stderr, @"rem: Error - ID Out of Range for Reminder List: %@\n", calendar);
-        exit(-1);
-    }
-    reminder = [reminders objectAtIndex:r_id];
+    if (command == CMD_CAT && reminder_id == nil)
+        return;
+    
+    NSInteger r_id = [reminder_id integerValue] - 1; // it could be an event_id in fact!
+    
+    if (command == CMD_CAL)
+    {   NSArray *events = [eventCalendars objectForKey:calendar];
+        if (r_id < 0 || r_id > events.count-1) {
+            my_print(stderr, @"rem: Error - ID Out of Range for Event List: %@\n", calendar);
+            exit(-1);
+        };
+        event = [events objectAtIndex:r_id];
+    };
+
+    if (command == CMD_CAT)
+    {   NSArray *reminders = [calendars objectForKey:calendar];
+        if (r_id < 0 || r_id > reminders.count-1) {
+            my_print(stderr, @"rem: Error - ID Out of Range for Reminder List: %@\n", calendar);
+            exit(-1);
+        };
+        reminder = [reminders objectAtIndex:r_id];
+    };
 }
 
 /*!
@@ -306,8 +334,8 @@ static void my_printCalendarLine(NSString *line, BOOL last)
 }
 
 /*!
-    @function my_printReminderLine
-    @abstract format and output line containing reminder information
+    @function my_printCalendarLine
+    @abstract format and output line containing event information
     @param line
         line to output
     @param last
@@ -321,6 +349,7 @@ static void my_printCalendarLine(NSString *line, BOOL last)
         by two horizontal lines, also unicode. Also, indent the reminder with either
         blank space, if part of last calendar; or vertical bar followed by blank space.
  */
+
 static void my_printReminderLine(NSUInteger id, NSString *line, BOOL last, BOOL lastCalendar)
 {
     NSString *indent = (lastCalendar) ? SPACER : PIPER;
@@ -330,7 +359,7 @@ static void my_printReminderLine(NSUInteger id, NSString *line, BOOL last, BOOL 
 
 /*!
     @function my_listCalendar
-    @abstract output a calendar and its reminders
+    @abstract output a calendar and its reminders // MF or possibly events; headers call an event or reminder an 'item'.
     @param cal
         name of calendar (reminder list)
     @param last
@@ -394,7 +423,7 @@ static void listReminders()
 static void listEvents()
 {
     my_print(stdout, @"Events partially implemented\n");
-    if (calendar) { /* wtf is calendar doing here? */
+    if (calendar) { /* Just the one calendar parsed; list it */
         my_listEventCalendar(calendar, YES); /* might do something sensible now */
     }
     else {
@@ -472,6 +501,41 @@ static void showReminder()
 }
 
 /*!
+ @function showEvent
+ @abstract show event details
+ @description show event details: creation date, last modified date (if different than
+ creation date), start date (if defined), end date (if defined), notes (if defined)
+ */
+static void showEvent()
+{
+    NSDateFormatter *dateFormatter = [[NSDateFormatter alloc] init];
+    [dateFormatter setDateStyle:NSDateFormatterShortStyle];
+    
+    my_print(stdout, @"Event: %@\n", event.title);
+    my_print(stdout, @"\tList: %@\n", calendar);
+    
+    my_print(stdout, @"\tCreated On: %@\n", [dateFormatter stringFromDate:event.creationDate]);
+    
+    if (event.lastModifiedDate >= event.creationDate) {
+        my_print(stdout, @"\tLast Modified On: %@\n", [dateFormatter stringFromDate:event.lastModifiedDate]);
+    }
+    
+    NSDate *startDate = event.startDate;
+    if (startDate) {
+        my_print(stdout, @"\tStarted On: %@\n", [dateFormatter stringFromDate:startDate]);
+    }
+    
+    NSDate *endDate = event.endDate;
+    if (endDate) {
+        my_print(stdout, @"\tEnds On: %@\n", [dateFormatter stringFromDate:endDate]);
+    }
+    
+    if (event.hasNotes) {
+        my_print(stdout, @"\tNotes: %@\n", event.notes);
+    }
+}
+
+/*!
     @function completeReminder
     @abstract mark specified reminder as complete
     @description mark specified reminder as complete
@@ -511,6 +575,10 @@ static void handleCommand()
             break;
         case CMD_EVENT:
             listEvents();
+            break;
+        case CMD_CAL:
+            showEvent();
+            break;
         case CMD_HELP:
         case CMD_VERSION:
         case CMD_UNKNOWN:

@@ -1,0 +1,4 @@
+#!/bin/bash
+# Matthew Fairtlough 2013_09_13
+# overwrites files so use with care!
+for file in *.$1; do mv ${file} `echo ${file} | sed "s/$1/$2/"`; echo "${file} renamed to $2"; done
